@@ -1,7 +1,7 @@
 // Truth tables with fixed signals. No network, no git.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import * as R from "../skills/jev-review/scripts/rules.mjs";
+import * as R from "../skills/review-router/scripts/rules.mjs";
 
 const NO = 0.05, YES = 0.9, MID = 0.5;
 const review = (o = {}) => ({ money: NO, database: NO, auth: NO, security: NO, subtle: NO, docs_only: NO, ...o });

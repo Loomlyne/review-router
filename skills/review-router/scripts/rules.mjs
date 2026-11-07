@@ -179,6 +179,36 @@ const SECRETS = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
   /\b[A-Za-z0-9+/_-]{40,}={0,2}/g
 ];
+// ---------- Diff redaction: runs on every diff before Jev or the heuristic sees it ----------
+// Keeps one output line per input line, so hunk headers and line counts stay true.
+const ENV_FILE = /(^|\/)\.env(\.[\w-]+)?$|(^|\/)[\w-]*\.env$/i;
+const ENV_EXAMPLE = /\.(example|sample|template|dist)$/i;
+const looksSecret = s => s.length >= 32 && /[A-Z]/.test(s) && /[a-z]/.test(s) && /\d/.test(s) && !/[/.]/.test(s);
+function redactCodeLine(line) {
+  let t = line;
+  for (const re of SECRETS.slice(0, 6)) t = t.replace(re, "[redacted-secret]"); // known key/token shapes
+  t = t.replace(/[A-Za-z0-9+/=_-]{32,}/g, m => (looksSecret(m) ? "[redacted-secret]" : m)); // high-entropy strings, not paths
+  t = t.replace(/(\b[a-z][\w+.-]*:\/\/)[^\s/'"]*@/gi, "$1[redacted]@"); // connection strings with credentials
+  t = t.replace(/\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{6,}/g, "$1 [redacted]");
+  t = t.replace(/^(\s*["']?(?:authorization|cookie|set-cookie)["']?\s*:\s*).+$/i, "$1[redacted]");
+  t = t.replace(/([\w-]*(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|private[_-]?key|credential|client[_-]?secret|access[_-]?key)[\w-]*["']?\s*[:=]\s*)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`[^`]*`|[^\s,;)}]+)/gi,
+    (m, k, v) => (/^["'`]?(process\.env|import\.meta\.env|env\.|os\.environ|getenv|\$\{?\w|\[redacted)/.test(v) ? m : `${k}[redacted]`));
+  return t;
+}
+export function redactDiff(diff) {
+  let file = "", inKey = false;
+  return diff.split("\n").map(line => {
+    const head = line.match(/^diff --git a\/\S+ b\/(\S+)/);
+    if (head) { file = head[1]; inKey = false; return line; }
+    if (/^(index |@@|--- |\+\+\+ |new file|deleted file|similarity|rename |old mode|new mode|Binary files)/.test(line)) return line;
+    const p = /^[+\- ]/.test(line) ? line[0] : "", body = p ? line.slice(1) : line;
+    if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(body)) { inKey = !/-----END [A-Z ]*PRIVATE KEY-----/.test(body); return `${p}[redacted-private-key]`; }
+    if (inKey) { if (/-----END [A-Z ]*PRIVATE KEY-----/.test(body)) inKey = false; return `${p}[redacted-private-key]`; }
+    if (ENV_FILE.test(file) && !ENV_EXAMPLE.test(file)) return p + body.replace(/^(\s*(?:export\s+)?[\w.-]+\s*=\s*).+$/, "$1[redacted]");
+    return p + redactCodeLine(body);
+  }).join("\n");
+}
+
 export function redact(text) {
   let t = text;
   for (const re of SECRETS) t = t.replace(re, "[redacted-secret]");

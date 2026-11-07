@@ -2,18 +2,19 @@
 // The key is read from the environment or the OS keychain and is never printed, logged or written to a file.
 import { execFileSync } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { redact, redactDiff } from "./rules.mjs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 
 const XDG = (v, d) => process.env[v] || join(homedir(), d);
-export const CONFIG_PATH = process.env.JEV_REVIEW_CONFIG || join(XDG("XDG_CONFIG_HOME", ".config"), "jev-review", "config.json");
-export const STATE_DIR = join(XDG("XDG_STATE_HOME", ".local/state"), "jev-review");
+export const CONFIG_PATH = process.env.REVIEW_ROUTER_CONFIG || join(XDG("XDG_CONFIG_HOME", ".config"), "review-router", "config.json");
+export const STATE_DIR = join(XDG("XDG_STATE_HOME", ".local/state"), "review-router");
 
 // Defaults. Override any key in CONFIG_PATH (see README "Config"). `reviewers` is strongest-first.
 export const DEFAULTS = {
   model: "jev-latest",
   bands: { yes: 0.7, no: 0.3 },
-  keychain: { service: "jev-review", account: "typesafe" },
+  keychain: { service: "review-router", account: "typesafe" },
   log: true,
   hosts: {
     "claude-code": { reviewers: ["opus", "sonnet"], ask_first: [], how: "Agent tool with model: \"{model}\" (fresh context, read-only review prompt)" },
@@ -81,7 +82,7 @@ export function storeKey(secret, cfg = loadConfig()) {
     return `macOS Keychain (service ${service}, account ${account})`;
   }
   if (platform() === "linux" && has("secret-tool")) {
-    execFileSync("secret-tool", ["store", "--label=TypeSafe API key (jev-review)", "service", service, "account", account], { input: secret, stdio: ["pipe", "ignore", "pipe"] });
+    execFileSync("secret-tool", ["store", "--label=TypeSafe API key (review-router)", "service", service, "account", account], { input: secret, stdio: ["pipe", "ignore", "pipe"] });
     return `Secret Service (service ${service}, account ${account})`;
   }
   throw new Error("no OS keychain found: set TYPESAFE_API_KEY in your shell profile or your OS secret store instead");
@@ -127,7 +128,7 @@ export async function checkKey(cfg = loadConfig(), fetchImpl = fetch) {
   } catch (e) { return { ok: false, source, detail: `could not reach api.typesafe.ai: ${scrub(e, key).message}` }; }
 }
 
-export const jevOff = cfg => process.env.JEV_REVIEW_OFF === "1" || cfg.jev === false;
+export const jevOff = cfg => process.env.REVIEW_ROUTER_OFF === "1" || cfg.jev === false;
 
 // ---------- git / gh ----------
 export const git = argv => run("git", argv).trimEnd();
@@ -161,8 +162,9 @@ export function loadChange(target) {
 // Both sides of every "diff --git a/X b/Y" header, so renamed-from paths are judged too.
 export const prFiles = diff => [...new Set([...diff.matchAll(/^diff --git a\/(\S+) b\/(\S+)$/gm)].flatMap(m => [m[1], m[2]]))];
 
+// Secrets are redacted here, before anything (Jev or the heuristic) reads the diff.
 export function shapeDiff(diff, { max = 80000, perFile = null } = {}) {
-  const hunks = diff.split(/^(?=diff --git )/m).filter(h => !NOISE.test(h.match(/^diff --git a\/(\S+)/)?.[1] ?? ""));
+  const hunks = diff.split(/^(?=diff --git )/m).filter(h => !NOISE.test(h.match(/^diff --git a\/(\S+)/)?.[1] ?? "")).map(redactDiff);
   const kept = (perFile ? hunks.map(h => h.slice(0, perFile)) : hunks).join("");
   const cut = kept.length > max;
   const lines = hunks.join("").split("\n");
@@ -172,6 +174,12 @@ export function shapeDiff(diff, { max = 80000, perFile = null } = {}) {
     changed: diff.split("\n").filter(l => /^[+-](?![+-])/.test(l)).length
   };
 }
+
+// The one state shape plan and audit send to Jev. Title is the author's text too, so it is redacted.
+export const changeState = (title, files, d) => ({
+  title: redact(title), files, diff: d.text,
+  ...(d.cut && { note: `diff truncated to the first ${d.max} characters; every changed file is listed in files` })
+});
 
 // ---------- host ----------
 const HOST_PATTERNS = [["claude-code", /(^|\/)claude$/], ["codex", /(^|\/)codex/], ["opencode", /(^|\/)opencode/], ["grok", /(^|\/)grok/]];

@@ -12,7 +12,7 @@ The plan prints `reviewers` (model ids) and `how` (the launch line for your host
 
 ## Config example
 
-`~/.config/jev-review/config.json` (create with `node scripts/cli.mjs config init`):
+`~/.config/review-router/config.json` (create with `node scripts/cli.mjs config init`):
 
 ```json
 {

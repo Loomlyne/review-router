@@ -7,10 +7,10 @@ import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const CLI = new URL("../skills/jev-review/scripts/cli.mjs", import.meta.url).pathname;
-const home = mkdtempSync(join(tmpdir(), "jev-review-home-"));
-const repo = mkdtempSync(join(tmpdir(), "jev-review-repo-"));
-const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_STATE_HOME: join(home, ".state"), JEV_REVIEW_OFF: "1", TYPESAFE_API_KEY: "" };
+const CLI = new URL("../skills/review-router/scripts/cli.mjs", import.meta.url).pathname;
+const home = mkdtempSync(join(tmpdir(), "review-router-home-"));
+const repo = mkdtempSync(join(tmpdir(), "review-router-repo-"));
+const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_STATE_HOME: join(home, ".state"), REVIEW_ROUTER_OFF: "1", TYPESAFE_API_KEY: "" };
 delete env.CLAUDECODE;
 const sh = (cmd, argv, cwd = repo) => execFileSync(cmd, argv, { cwd, env, encoding: "utf8" });
 const cli = (...argv) => JSON.parse(sh("node", [CLI, ...argv, "--json"]));
@@ -78,7 +78,7 @@ test("targets that git would read as options are refused", () => {
 });
 
 test("code under build/ or out/ is judged, not dropped", async () => {
-  const L = await import("../skills/jev-review/scripts/lib.mjs");
+  const L = await import("../skills/review-router/scripts/lib.mjs");
   const diff = "diff --git a/src/build/auth/login.ts b/src/build/auth/login.ts\n+export const x = 1\ndiff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n+lock\n";
   const d = L.shapeDiff(diff);
   assert.match(d.text, /src\/build\/auth\/login\.ts/);
@@ -100,7 +100,7 @@ test("doctor runs and reports the missing key as optional", () => {
 
 test("jev client: retries 429, treats a missing answer as an error, never leaks the key", async () => {
   process.env.TYPESAFE_API_KEY = "test_key_0123456789abcdef";
-  const L = await import("../skills/jev-review/scripts/lib.mjs");
+  const L = await import("../skills/review-router/scripts/lib.mjs");
   const cfg = { ...L.DEFAULTS };
   let calls = 0;
   const ok = async () => { calls++; return calls === 1 ? new Response("", { status: 429, headers: { "retry-after": "0.01" } }) : Response.json({ model: "jev-1.14.0", answers: { a: { noul: 0.81234 } } }); };

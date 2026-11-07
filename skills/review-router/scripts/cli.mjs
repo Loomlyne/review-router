@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// jev-review: risk-ranked PR review on your own agent subscription.
+// review-router: risk-ranked PR review on your own agent subscription.
 //   doctor                         check node, git, gh, host, TypeSafe key, companion skills
 //   key store|check|where          keep the TypeSafe key in the OS keychain (read from stdin or a hidden prompt)
 //   fit [--send|--offline]         is this worth it for you? reads your agent notes and repo history locally
@@ -23,7 +23,7 @@ const print = (obj, text) => console.log(a.json || !text ? JSON.stringify(obj, n
 
 // Ask Jev when a key is there and Jev is on; otherwise the documented heuristic. A failed call is an error, never an answer.
 async function judge(cfg, state, questions, heuristic) {
-  if (L.jevOff(cfg)) return { judge: "heuristic", why: "Jev switched off (JEV_REVIEW_OFF=1 or config jev:false)", signals: heuristic() };
+  if (L.jevOff(cfg)) return { judge: "heuristic", why: "Jev switched off (REVIEW_ROUTER_OFF=1 or config jev:false)", signals: heuristic() };
   if (!L.findKey(cfg).key) return { judge: "heuristic", why: "no TypeSafe key: code-only heuristic, not Jev", signals: heuristic() };
   const r = await L.jev(state, questions, { cfg });
   return { judge: "jev", jev_model: r.model, usage: r.usage, signals: r.signals };
@@ -50,7 +50,7 @@ async function plan() {
   const facts = { changed: d.changed, files: ch.files.length, prose: R.allProse(ch.files) };
   const out = { target, title: ch.title, host, host_detected_by: hostHow, author_flag: a.author ?? null, authors, ...(trailerWarning && { trailer_warning: trailerWarning }), ...facts, truncated: d.cut };
   try {
-    const j = await judge(cfg, { title: ch.title, files: ch.files, diff: d.text, ...(d.cut && { note: `diff truncated to the first ${d.max} characters; every changed file is listed in files` }) },
+    const j = await judge(cfg, L.changeState(ch.title, ch.files, d),
       REVIEW, () => R.heuristicSignals(Object.keys(REVIEW), { files: ch.files, added: d.added }));
     Object.assign(out, j, R.reviewTier(j.signals, facts, cfg.bands));
   } catch (e) {
@@ -89,7 +89,7 @@ async function audit() {
   if (!ch.files.length) Object.assign(out, { judge: "none", security: "none", untangle: "none", reason: "no changes" });
   else {
     try {
-      const j = await judge(cfg, { title: ch.title, files: ch.files, diff: d.text, ...(d.cut && { note: `diff truncated to the first ${d.max} characters; every changed file is listed in files` }) },
+      const j = await judge(cfg, L.changeState(ch.title, ch.files, d),
         AUDIT, () => R.heuristicSignals(Object.keys(AUDIT), { files: ch.files, added: d.added, markers }));
       Object.assign(out, j, R.auditModes(j.signals, facts, cfg.bands));
     } catch (e) {
@@ -300,6 +300,6 @@ try {
   if (!COMMANDS[cmd]) throw usage("<doctor | key store|check|where | fit | plan <target> | audit <target>|--routine | config init|show> [--host h] [--author m] [--json]");
   await COMMANDS[cmd]();
 } catch (e) {
-  console.error(e.usage ? e.message : `jev-review: ${e.message}`);
+  console.error(e.usage ? e.message : `review-router: ${e.message}`);
   process.exitCode = e.usage ? 2 : 1;
 }
