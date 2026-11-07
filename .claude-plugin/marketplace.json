@@ -1,0 +1,15 @@
+{
+  "name": "jev-review",
+  "owner": { "name": "jev-review maintainers" },
+  "metadata": { "description": "Risk-ranked PR review on your own agent subscription" },
+  "plugins": [
+    {
+      "name": "jev-review",
+      "description": "Small typed judgments pick the review tier, a reviewer model that is never the author's, a second pass on deep risk, and the security gate.",
+      "version": "0.1.0",
+      "source": "./",
+      "strict": false,
+      "skills": ["./skills/jev-review"]
+    }
+  ]
+}

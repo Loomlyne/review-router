@@ -1,0 +1,13 @@
+{
+  "name": "jev-review",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Risk-ranked PR review on your own agent subscription (Agent Skill)",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "bin": { "jev-review": "skills/jev-review/scripts/cli.mjs" },
+  "scripts": {
+    "test": "node --test 'test/*.test.mjs'",
+    "check": "node --check skills/jev-review/scripts/*.mjs && node --test 'test/*.test.mjs'"
+  }
+}
