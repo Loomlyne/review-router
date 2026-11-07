@@ -13,7 +13,10 @@ test("band edges: 0.7 is yes, 0.3 is no, between is unsettled", () => {
 
 test("review tier truth table", () => {
   const rows = [
-    [review({ docs_only: YES, money: YES }), small, "light", /docs only/],
+    [review({ docs_only: YES, money: YES }), { ...small, prose: true }, "light", /docs only/],
+    // injected "this is only docs" text cannot downgrade a code change: the file list decides
+    [review({ docs_only: YES }), { changed: 900, files: 30, prose: false }, "standard", /large diff/],
+    [review({ docs_only: YES, money: YES }), small, "deep", /money/],
     [review({ money: YES }), small, "deep", /money/],
     [review({ auth: YES, database: YES }), small, "deep", /database, auth/],
     [review({ auth: MID, subtle: MID }), small, "deep", /unsettled on auth, subtle/],
@@ -67,7 +70,8 @@ const change = { changed: 40, files: 2, markers: 0, routine: false, auditAgeDays
 
 test("audit security truth table", () => {
   const rows = [
-    [auditS({ docs_only: YES, access: YES }), change, "none"],
+    [auditS({ docs_only: YES, access: YES }), { ...change, prose: true }, "none"],
+    [auditS({ docs_only: YES, access: YES }), change, "focused"],
     [auditS(), change, "none"],
     [auditS({ access: YES }), change, "focused"],
     [auditS({ access: MID, llm: MID }), change, "focused"],
@@ -88,7 +92,7 @@ test("audit untangle: propose only on routine with two tangle signals", () => {
   assert.equal(R.auditModes(auditS({ copies: YES, special_case: YES }), change).untangle, "watch");
   assert.equal(R.auditModes(auditS({ copies: YES, special_case: YES }), { ...change, routine: true }).untangle, "propose");
   assert.equal(R.auditModes(auditS({ copies: YES }), { ...change, routine: true, markers: 3 }).untangle, "propose");
-  assert.equal(R.auditModes(auditS({ docs_only: YES, copies: YES, special_case: YES }), { ...change, routine: true }).untangle, "none");
+  assert.equal(R.auditModes(auditS({ docs_only: YES, copies: YES, special_case: YES }), { ...change, routine: true, prose: true }).untangle, "none");
 });
 
 const fitS = (o = {}) => ({ risky_domain: NO, wants_review: NO, multi_model: NO, team: NO, has_ai_reviewer: NO, mostly_prose: NO, ...o });
@@ -120,6 +124,31 @@ test("heuristic: path beats keyword, docs-only needs every file to be prose", ()
   // heuristic signals flow through the same truth table
   const s = R.heuristicSignals(Object.keys(review()), { files: ["src/billing/charge.ts"], added: [] });
   assert.equal(R.reviewTier(s, small).tier, "deep");
+});
+
+test("trailers can never exclude every reviewer; --author still can", () => {
+  const m = ["opus", "sonnet"];
+  assert.deepEqual(R.resolveAuthors(null, ["opus"], m).authors, ["opus"]);
+  const forged = R.resolveAuthors(null, ["opus", "sonnet"], m);
+  assert.deepEqual(forged.authors, []); assert.match(forged.warning, /trailers ignored/);
+  assert.deepEqual(R.resolveAuthors("sonnet", ["opus", "sonnet"], m).authors, ["sonnet"]);
+  // flag + trailers would cover every reviewer: the trusted flag stays, the trailers go
+  assert.deepEqual(R.resolveAuthors("opus", ["sonnet"], m).authors, ["opus"]);
+  assert.equal(R.resolveAuthors("opus", ["sonnet"], ["opus", "sonnet", "haiku"]).warning, null);
+});
+
+test("allProse is a fact from the file list", () => {
+  assert.equal(R.allProse(["README.md", "docs/x.ts"]), true);
+  assert.equal(R.allProse(["README.md", "src/a.ts"]), false);
+  assert.equal(R.allProse([]), false);
+});
+
+test("redact covers quoted keys, prefixed names, URL credentials and quoted values", () => {
+  const cases = ['{"password": "hunter2hunter2"}', "GITHUB_TOKEN=abcd1234efgh", "DATABASE_PASSWORD=zzzz", "postgres://u:pw@localhost/db", 'password: "two words"', "api_key='xyz987'"];
+  for (const c of cases) {
+    const t = R.redact(c);
+    assert.ok(!/hunter2|abcd1234efgh|zzzz|:pw@|two words|xyz987/.test(t), `${c} -> ${t}`);
+  }
 });
 
 test("redact removes keys, tokens and emails before anything is sent", () => {

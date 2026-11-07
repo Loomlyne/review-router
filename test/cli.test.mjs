@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -66,6 +66,33 @@ test("fit: offline verdict lists what was read and sends nothing", () => {
   assert.ok(["this will help", "partly", "not worth it"].includes(f.verdict));
 });
 
+test("targets that git would read as options are refused", () => {
+  const victim = join(home, "victim.txt");
+  for (const bad of [`--output=${victim}`, "-p", "HEAD", "a..b;rm"]) {
+    let err = "", code = 0;
+    try { sh("node", [CLI, "plan", bad, "--json"]); } catch (e) { err = e.stderr?.toString() ?? ""; code = e.status; }
+    assert.notEqual(code, 0, bad);
+    assert.match(err, /target must be a PR number or a range|usage:/, bad);
+  }
+  assert.ok(!existsSync(victim), "git --output never ran");
+});
+
+test("code under build/ or out/ is judged, not dropped", async () => {
+  const L = await import("../skills/jev-review/scripts/lib.mjs");
+  const diff = "diff --git a/src/build/auth/login.ts b/src/build/auth/login.ts\n+export const x = 1\ndiff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n+lock\n";
+  const d = L.shapeDiff(diff);
+  assert.match(d.text, /src\/build\/auth\/login\.ts/);
+  assert.ok(!d.text.includes("pnpm-lock"));
+});
+
+test("a malformed key is refused without being echoed", () => {
+  const leaked = "bad key with spaces\nAND_A_NEWLINE_0123456789";
+  let out = "";
+  try { out = execFileSync("node", [CLI, "key", "check", "--json"], { cwd: repo, env: { ...env, TYPESAFE_API_KEY: leaked }, encoding: "utf8" }); } catch (e) { out = `${e.stdout}${e.stderr}`; }
+  assert.match(out, /malformed/);
+  assert.ok(!out.includes("AND_A_NEWLINE"), out);
+});
+
 test("doctor runs and reports the missing key as optional", () => {
   const d = JSON.parse(sh("node", [CLI, "doctor", "--json", "--host", "claude-code"]));
   assert.ok(d.checks.find(c => c.name === "TypeSafe key"));
@@ -83,5 +110,7 @@ test("jev client: retries 429, treats a missing answer as an error, never leaks 
   await assert.rejects(L.jev({}, { a: { type: "noul", instructions: "?" } }, { cfg, fetchImpl: missing }), /missing/);
   const bad = async () => new Response("nope", { status: 401 });
   await assert.rejects(L.jev({}, { a: {} }, { cfg, fetchImpl: bad }), e => !e.message.includes("test_key_0123456789abcdef"));
+  const throwsWithKey = async (_u, o) => { throw new TypeError(`invalid header value ${o.headers.Authorization}`); };
+  await assert.rejects(L.jev({}, { a: {} }, { cfg, fetchImpl: throwsWithKey }), e => !e.message.includes("test_key_0123456789abcdef") && /\[key\]/.test(e.message));
   delete process.env.TYPESAFE_API_KEY;
 });

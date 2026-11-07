@@ -36,15 +36,27 @@ export function loadConfig() {
   catch (e) { throw new Error(`config ${CONFIG_PATH} is not valid JSON: ${e.message}`); }
 }
 
-const run = (cmd, argv, opts = {}) => execFileSync(cmd, argv, { encoding: "utf8", maxBuffer: 64 << 20, stdio: ["ignore", "pipe", "ignore"], timeout: 30000, ...opts });
+const childEnv = () => { const e = { ...process.env }; delete e.TYPESAFE_API_KEY; return e; }; // git, gh, ps never need the key
+const run = (cmd, argv, opts = {}) => execFileSync(cmd, argv, { encoding: "utf8", maxBuffer: 64 << 20, stdio: ["ignore", "pipe", "ignore"], timeout: 30000, env: childEnv(), ...opts });
 export const tryRun = (cmd, argv, opts) => { try { return run(cmd, argv, opts); } catch { return null; } };
 export const has = cmd => tryRun(platform() === "win32" ? "where" : "which", [cmd]) !== null;
 
 // ---------- TypeSafe key ----------
 // Order: TYPESAFE_API_KEY env var, then the OS keychain (macOS Keychain, Linux Secret Service). Returns { key, source }.
-export function findKey(cfg = loadConfig()) {
-  if (process.env.TYPESAFE_API_KEY) return { key: process.env.TYPESAFE_API_KEY, source: "env TYPESAFE_API_KEY" };
+const NAME = /^[\w.-]{1,64}$/;
+function keychainNames(cfg) {
   const { service, account } = cfg.keychain;
+  if (!NAME.test(service) || !NAME.test(account)) throw new Error("config keychain.service and keychain.account may only use letters, digits, . _ -");
+  return { service, account };
+}
+
+export function findKey(cfg = loadConfig()) {
+  const env = process.env.TYPESAFE_API_KEY?.trim();
+  if (env) {
+    if (!KEY_SHAPE.test(env)) throw new Error("TYPESAFE_API_KEY is set but malformed (only letters, digits, . _ - are allowed); fix it in your shell profile");
+    return { key: env, source: "env TYPESAFE_API_KEY" };
+  }
+  const { service, account } = keychainNames(cfg);
   if (platform() === "darwin") {
     const k = tryRun("security", ["find-generic-password", "-s", service, "-a", account, "-w"], { timeout: 5000 })?.trim();
     if (k) return { key: k, source: `macOS Keychain (service ${service})` };
@@ -56,11 +68,13 @@ export function findKey(cfg = loadConfig()) {
 }
 
 export const KEY_SHAPE = /^[A-Za-z0-9._-]{16,256}$/;
+// Errors from fetch can quote request headers; never let the key reach a message, log or transcript.
+const scrub = (e, key) => new Error(String(e?.message ?? e).split(key).join("[key]").replace(/Bearer\s+\S+/g, "Bearer [key]"));
 
 // Store a key read by the caller (never from argv). Returns where it went, or throws with what to do instead.
 export function storeKey(secret, cfg = loadConfig()) {
   if (!KEY_SHAPE.test(secret)) throw new Error("that does not look like a TypeSafe API key (letters, digits, . _ - only); nothing stored");
-  const { service, account } = cfg.keychain;
+  const { service, account } = keychainNames(cfg);
   if (platform() === "darwin") {
     // `security -i` reads the command from stdin, so the key never appears in the process list.
     execFileSync("security", ["-i"], { input: `add-generic-password -U -s ${service} -a ${account} -w ${secret}\n`, stdio: ["pipe", "ignore", "pipe"] });
@@ -81,15 +95,17 @@ export async function jev(state, questions, { cfg = loadConfig(), timeoutMs = 20
   const body = JSON.stringify({ model: cfg.model, state, questions });
   let res;
   for (let attempt = 0; attempt < retries; attempt++) {
-    res = await fetchImpl(`${API}/v1/systemone`, {
-      method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" }, body,
-      signal: AbortSignal.timeout(timeoutMs)
-    });
+    try {
+      res = await fetchImpl(`${API}/v1/systemone`, {
+        method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" }, body,
+        signal: AbortSignal.timeout(timeoutMs)
+      });
+    } catch (e) { throw scrub(e, key); }
     if (res.status !== 429 && res.status !== 529) break;
     const wait = Number(res.headers.get("retry-after")) * 1000 || 1000 * 2 ** attempt;
     await new Promise(r => setTimeout(r, wait));
   }
-  if (!res.ok) throw new Error(`TypeSafe ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  if (!res.ok) throw scrub(`TypeSafe ${res.status}: ${(await res.text()).slice(0, 300)}`, key);
   const data = await res.json();
   const signals = {};
   for (const k of Object.keys(questions)) {
@@ -101,12 +117,14 @@ export async function jev(state, questions, { cfg = loadConfig(), timeoutMs = 20
 }
 
 export async function checkKey(cfg = loadConfig(), fetchImpl = fetch) {
-  const { key, source } = findKey(cfg);
+  let found;
+  try { found = findKey(cfg); } catch (e) { return { ok: false, source: null, detail: e.message }; }
+  const { key, source } = found;
   if (!key) return { ok: false, source: null, detail: "no key found" };
   try {
     const res = await fetchImpl(`${API}/v1/models`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10000) });
     return { ok: res.ok, source, detail: res.ok ? "key accepted by api.typesafe.ai" : `api.typesafe.ai answered ${res.status}` };
-  } catch (e) { return { ok: false, source, detail: `could not reach api.typesafe.ai: ${e.message}` }; }
+  } catch (e) { return { ok: false, source, detail: `could not reach api.typesafe.ai: ${scrub(e, key).message}` }; }
 }
 
 export const jevOff = cfg => process.env.JEV_REVIEW_OFF === "1" || cfg.jev === false;
@@ -116,17 +134,26 @@ export const git = argv => run("git", argv).trimEnd();
 export const gh = argv => run("gh", argv).trimEnd();
 
 // Lockfiles and generated output say nothing about risk and eat Jev's 32k-token per-question budget.
-export const NOISE = /(^|\/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb?|Cargo\.lock|poetry\.lock|go\.sum)$|(^|\/)(dist|build|out|\.next|vendor|node_modules)\/|\.min\.(js|css)$|\.generated\.|\.snap$/;
+// Path segments like build/ or out/ are not dropped: real code lives there too, and hiding it would hide its risk.
+export const NOISE = /(^|\/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb?|Cargo\.lock|poetry\.lock|go\.sum)$|(^|\/)node_modules\/|\.min\.(js|css)$|\.generated\.|\.snap$/;
+
+// A target is a PR number or base..head. Anything else (above all a leading "-") is refused: git would read it as an option.
+export const RANGE = /^[\w./@^~{}-]+\.{2,3}[\w./@^~{}-]+$/;
+export function checkTarget(target) {
+  if (/^\d+$/.test(target) || (RANGE.test(target) && !target.startsWith("-"))) return target;
+  throw new Error(`target must be a PR number or a range like main..HEAD, got ${JSON.stringify(target.slice(0, 80))}`);
+}
 
 // target: PR number (via gh), or a git range like main..HEAD.
 export function loadChange(target) {
+  checkTarget(target);
   const isPr = /^\d+$/.test(target);
-  const diff = isPr ? gh(["pr", "diff", target]) : git(["diff", target]);
-  const files = (isPr ? gh(["pr", "diff", target, "--name-only"]) : git(["diff", "--name-only", target])).split("\n").filter(Boolean);
+  const diff = isPr ? gh(["pr", "diff", target]) : git(["diff", "--end-of-options", target]);
+  const files = (isPr ? gh(["pr", "diff", target, "--name-only"]) : git(["diff", "--name-only", "--end-of-options", target])).split("\n").filter(Boolean);
   const title = isPr ? JSON.parse(gh(["pr", "view", target, "--json", "title"])).title : target;
   const range = isPr ? null : target;
   const messages = isPr ? JSON.parse(gh(["pr", "view", target, "--json", "commits"])).commits.map(c => `${c.messageHeadline}\n${c.messageBody}`).join("\n")
-    : tryRun("git", ["log", "--format=%B", target]) ?? "";
+    : tryRun("git", ["log", "--format=%B", "--end-of-options", target]) ?? "";
   return { isPr, diff, files, title, range, messages };
 }
 
@@ -164,7 +191,7 @@ export function detectHost(flag) {
 // ---------- logs (signals and verdicts only, never diffs or text) ----------
 export function log(cfg, name, entry) {
   if (!cfg.log) return;
-  try { mkdirSync(STATE_DIR, { recursive: true }); appendFileSync(join(STATE_DIR, `${name}.jsonl`), JSON.stringify({ time: new Date().toISOString(), ...entry }) + "\n"); } catch { /* logging is best effort */ }
+  try { mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 }); appendFileSync(join(STATE_DIR, `${name}.jsonl`), JSON.stringify({ time: new Date().toISOString(), ...entry }) + "\n", { mode: 0o600 }); } catch { /* logging is best effort */ }
 }
 
 export function args(argv, flags = []) {

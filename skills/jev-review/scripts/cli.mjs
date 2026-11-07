@@ -7,7 +7,7 @@
 //   audit <pr | base..head> | --routine [--days 30]   security-audit mode + untangle-codebase proposal
 //   config init|show               write or print the config file
 // Common flags: --host <claude-code|codex|opencode|grok|generic>  --author <model>  --json
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,9 +46,9 @@ async function plan() {
   const ch = L.loadChange(target);
   const d = L.shapeDiff(ch.diff);
   const all = [...hcfg.reviewers, ...(hcfg.ask_first ?? [])];
-  const authors = [...new Set([R.matchModel(a.author, all), ...R.authorFromTrailers(ch.messages, all)].filter(Boolean))];
-  const facts = { changed: d.changed, files: ch.files.length };
-  const out = { target, title: ch.title, host, host_detected_by: hostHow, author_flag: a.author ?? null, authors, ...facts, truncated: d.cut };
+  const { authors, warning: trailerWarning } = R.resolveAuthors(R.matchModel(a.author, all), R.authorFromTrailers(ch.messages, all), hcfg.reviewers);
+  const facts = { changed: d.changed, files: ch.files.length, prose: R.allProse(ch.files) };
+  const out = { target, title: ch.title, host, host_detected_by: hostHow, author_flag: a.author ?? null, authors, ...(trailerWarning && { trailer_warning: trailerWarning }), ...facts, truncated: d.cut };
   try {
     const j = await judge(cfg, { title: ch.title, files: ch.files, diff: d.text, ...(d.cut && { note: `diff truncated to the first ${d.max} characters; every changed file is listed in files` }) },
       REVIEW, () => R.heuristicSignals(Object.keys(REVIEW), { files: ch.files, added: d.added }));
@@ -84,7 +84,7 @@ async function audit() {
   const d = L.shapeDiff(ch.diff, routine ? { max: 40000, perFile: 1200 } : {});
   const MARKERS = /setTimeout\(|sleep\(|catch\s*(\(\w*\))?\s*\{\s*\}|\.skip\(|\bxit\(|@ts-ignore|eslint-disable|retry/i;
   const markers = d.added.filter(l => MARKERS.test(l)).length;
-  const facts = { changed: d.changed, files: ch.files.length, markers, routine, auditAgeDays, days };
+  const facts = { changed: d.changed, files: ch.files.length, prose: R.allProse(ch.files), markers, routine, auditAgeDays, days };
   const out = { repo, mode: routine ? "routine" : "change", target: target ?? null, ...facts, truncated: d.cut };
   if (!ch.files.length) Object.assign(out, { judge: "none", security: "none", untangle: "none", reason: "no changes" });
   else {
@@ -125,7 +125,8 @@ function readNotes() {
   const read = [join(cwd, "CLAUDE.local.md")].filter(existsSync).map(p => ({ path: p.replace(h, "~"), label: "local-only, skipped", bytes: statSync(p).size, sent_chars: 0 })), parts = [];
   let budget = 24000;
   for (const [p, label] of candidates) {
-    if (!existsSync(p) || !statSync(p).isFile()) continue;
+    if (!existsSync(p)) continue;
+    if (!lstatSync(p).isFile()) { read.push({ path: p.replace(h, "~"), label: `${label}: symlink or not a file, skipped`, bytes: 0, sent_chars: 0 }); continue; }
     const raw = readFileSync(p, "utf8");
     const take = Math.min(raw.length, 6000, budget);
     budget -= take;
@@ -175,9 +176,10 @@ async function fit() {
     ci: f.ci ? ".github/workflows `uses:` lines" : "none",
     clis
   };
-  const keyed = !!L.findKey(cfg).key && !L.jevOff(cfg);
+  let keyed;
+  try { keyed = !!L.findKey(cfg).key && !L.jevOff(cfg); } catch (e) { process.exitCode = 1; return print({ step: "error", error: e.message }, `Fit check stopped: ${e.message}`); }
   if (keyed && !a.send && !a.offline) {
-    const out = { step: "consent", read, would_send: { to: "api.typesafe.ai (Jev)", chars: payloadChars, questions: Object.keys(FIT), redacted: "emails, tokens and key-like strings are replaced before sending" },
+    const out = { step: "consent", read, would_send: { to: "api.typesafe.ai (Jev)", chars: payloadChars, questions: Object.keys(FIT), redacted: "best effort: emails, URL credentials, password/token/key assignments and key-like strings are replaced; read --show-payload before sending if your notes hold secrets" },
       next: [`node ${CLI} fit --send          # ask Jev the ${Object.keys(FIT).length} questions`, `node ${CLI} fit --offline       # code-only heuristic, sends nothing`, `node ${CLI} fit --show-payload  # print exactly what would be sent`] };
     if (a["show-payload"]) out.payload = state;
     return print(out, fitText(out));
@@ -201,7 +203,7 @@ function fitText(o) {
   if (!o.read.files.length) lines.push("  no agent instruction files found");
   lines.push(`  ${o.read.git}`, `  ${o.read.github}`, `  CI: ${o.read.ci}`, `  agent CLIs on PATH: ${o.read.clis.join(", ") || "none"}`);
   if (o.step === "consent") {
-    lines.push("", `Nothing sent yet. With --send, ${o.would_send.chars} characters (redacted) go to ${o.would_send.to} for ${o.would_send.questions.length} yes/no judgments:`, `  ${o.would_send.questions.join(", ")}`, "", ...o.next);
+    lines.push("", `Nothing sent yet. With --send, ${o.would_send.chars} characters go to ${o.would_send.to} for ${o.would_send.questions.length} yes/no judgments:`, `  ${o.would_send.questions.join(", ")}`, `Redaction is ${o.would_send.redacted}.`, "", ...o.next);
     if (o.payload) lines.push("", JSON.stringify(o.payload, null, 2));
     return lines.join("\n");
   }
@@ -216,6 +218,7 @@ async function readSecret() {
   if (a["from-clipboard"]) {
     const v = L.tryRun("pbpaste", [])?.trim();
     if (!v) throw new Error("clipboard is empty (or pbpaste is unavailable: macOS only)");
+    if (!L.KEY_SHAPE.test(v)) throw new Error("the clipboard does not hold a TypeSafe API key; nothing stored, clipboard left as it was");
     L.tryRun("pbcopy", [], { input: "", stdio: ["pipe", "ignore", "ignore"] });
     return v;
   }
@@ -242,7 +245,7 @@ async function key() {
     return print({ stored: where, check: chk }, `Stored in ${where}. Check: ${chk.detail}.`);
   }
   if (sub === "check") { const c = await L.checkKey(cfg); if (!c.ok) process.exitCode = 1; return print(c, `${c.ok ? "OK" : "NOT OK"}: ${c.detail}${c.source ? ` (from ${c.source})` : ""}`); }
-  const { source } = L.findKey(cfg);
+  const { source } = L.findKey(cfg); // throws with a fix-it message on a malformed key
   print({ source }, source ? `Key found in ${source} (value not shown).` : "No key found.");
 }
 
@@ -262,8 +265,10 @@ async function doctor() {
   add("host", host !== "generic", `${host} (${how})`, `Pass --host <claude-code|codex|opencode|grok> when the agent is not detected.`);
   add("reviewer models", hc.reviewers.length >= 2, hc.reviewers.length ? `${host}: ${hc.reviewers.join(" > ")} (config: ${cfg._source})` : `none configured for ${host}`,
     `List at least two models your ${host} subscription offers, strongest first, in hosts.${host}.reviewers of ${L.CONFIG_PATH} (node ${CLI} config init writes a starter file).`);
-  const k = L.findKey(cfg);
-  if (L.jevOff(cfg)) add("TypeSafe key", true, "Jev switched off: heuristic only", null);
+  let k;
+  try { k = L.findKey(cfg); } catch (e) { k = { key: null, error: e.message }; }
+  if (k.error) add("TypeSafe key", false, k.error, "Fix TYPESAFE_API_KEY or the keychain names in your config.");
+  else if (L.jevOff(cfg)) add("TypeSafe key", true, "Jev switched off: heuristic only", null);
   else if (k.key) { const c = await L.checkKey(cfg); add("TypeSafe key", c.ok, `${c.source}: ${c.detail}`, "The key was found but not accepted: create a new one at https://console.typesafe.ai/keys and store it again."); }
   else {
     add("TypeSafe key", false, "not found: plans use the code-only heuristic, not Jev", null);

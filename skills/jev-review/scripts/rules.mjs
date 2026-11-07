@@ -7,12 +7,15 @@ export const band = (p, b = DEFAULT_BANDS) => (p >= b.yes ? "yes" : p <= b.no ? 
 const isYes = (p, b) => band(p, b) === "yes";
 
 // ---------- Review tier ----------
-// facts: { changed: lines added+removed, files: number of files }
+// A diff is written by the change's author, so Jev's docs_only answer only counts when every file is prose (a fact code checks).
+const docsOnly = (s, facts, b) => isYes(s.docs_only, b) && facts.prose === true;
+
+// facts: { changed: lines added+removed, files: number of files, prose: every changed file is prose }
 export function reviewTier(s, facts, b = DEFAULT_BANDS) {
   const yes = REVIEW_RISK.filter(k => isYes(s[k], b));
   const unsettled = [...REVIEW_RISK, "subtle"].filter(k => band(s[k], b) === "unsettled");
   const big = facts.changed > 400 || facts.files > 10; // size is code's job, never Jev's
-  if (isYes(s.docs_only, b)) return { tier: "light", reason: "docs only: prose cannot change behaviour" };
+  if (docsOnly(s, facts, b)) return { tier: "light", reason: "docs only: prose cannot change behaviour" };
   if (yes.length) return { tier: "deep", reason: `touches ${yes.join(", ")}` };
   if (unsettled.length >= 2) return { tier: "deep", reason: `unsettled on ${unsettled.join(", ")}: stronger review` };
   if (isYes(s.subtle, b)) return { tier: "standard", reason: "subtle logic" };
@@ -41,6 +44,16 @@ export function authorFromTrailers(messages, models) {
   return [...found];
 }
 
+// Authors from --author are trusted; authors from commit trailers are written by whoever made the commits,
+// so they may never exclude every configured reviewer.
+export function resolveAuthors(flagAuthor, trailerAuthors, models) {
+  const flag = flagAuthor ? [flagAuthor] : [];
+  const all = [...new Set([...flag, ...trailerAuthors])];
+  if (models.length && models.every(m => all.includes(m)) && !models.every(m => flag.includes(m)))
+    return { authors: flag, warning: `commit trailers name every reviewer model (${trailerAuthors.join(", ")}): trailers ignored; pass --author` };
+  return { authors: all, warning: null };
+}
+
 // host: { reviewers: strongest-first ids, ask_first: ids that need the user's yes (premium) }
 // authors: ids that wrote the change (never review their own work).
 export function pickReviewers(tier, host, authors = []) {
@@ -61,12 +74,12 @@ export function pickReviewers(tier, host, authors = []) {
 }
 
 // ---------- Audit gate ----------
-// facts: { changed, files, markers, routine, auditAgeDays (null = never), days }
+// facts: { changed, files, prose, markers, routine, auditAgeDays (null = never), days }
 export function auditModes(s, f, b = DEFAULT_BANDS) {
   const yes = AUDIT_SEC.filter(k => isYes(s[k], b));
   const unsettled = AUDIT_SEC.filter(k => band(s[k], b) === "unsettled");
   let security, security_reason;
-  if (isYes(s.docs_only, b)) { security = "none"; security_reason = "docs only"; }
+  if (docsOnly(s, f, b)) { security = "none"; security_reason = "docs only"; }
   else if (f.routine && (f.auditAgeDays === null || f.auditAgeDays >= f.days) && (yes.length || unsettled.length >= 2)) {
     security = "full";
     security_reason = `${f.auditAgeDays === null ? "no full audit yet" : `last full audit ${f.auditAgeDays} days ago`}; changes touch ${[...yes, ...unsettled].join(", ")}`;
@@ -75,7 +88,7 @@ export function auditModes(s, f, b = DEFAULT_BANDS) {
   else { security = "none"; security_reason = "no trust-boundary changes"; }
 
   const tangle = isYes(s.copies, b) + isYes(s.special_case, b) + (f.markers >= 3);
-  const untangle = isYes(s.docs_only, b) ? "none" : f.routine && tangle >= 2 ? "propose" : tangle ? "watch" : "none";
+  const untangle = docsOnly(s, f, b) ? "none" : f.routine && tangle >= 2 ? "propose" : tangle ? "watch" : "none";
   const untangle_reason = untangle === "none" ? "no new copies or special cases"
     : [isYes(s.copies, b) && "duplicated logic", isYes(s.special_case, b) && "special cases added", f.markers >= 3 && `${f.markers} sleep/retry/skip/ignore markers`].filter(Boolean).join(", ");
   return { security, security_reason, untangle, untangle_reason };
@@ -122,7 +135,8 @@ const H = {
   secrets_infra: { path: /(\.github\/workflows|wrangler|dockerfile|deploy|\.env|vercel\.json|netlify\.toml|_headers)/i, line: /\b(secret|CORS|Content-Security-Policy|Access-Control)\b/i },
   llm: { path: /(llm|prompt|openai|anthropic|agent|ai\/)/i, line: /\b(openai|anthropic|completion|messages\.create|prompt|systemPrompt|tool_use)\b/i }
 };
-const PROSE = /\.(md|mdx|txt|rst|adoc)$|(^|\/)(docs|\.planning)\//i;
+export const PROSE = /\.(md|mdx|txt|rst|adoc)$|(^|\/)(docs|\.planning)\//i;
+export const allProse = files => files.length > 0 && files.every(f => PROSE.test(f));
 
 export function heuristicSignals(keys, { files, added, markers = 0 }) {
   const out = {};
@@ -166,7 +180,8 @@ const SECRETS = [
 export function redact(text) {
   let t = text;
   for (const re of SECRETS) t = t.replace(re, "[redacted-secret]");
+  t = t.replace(/(\b[a-z][\w+.-]*:\/\/)[^\s/:@]+:[^\s/@]+@/gi, "$1[redacted]@"); // credentials in URLs
   t = t.replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "[redacted-email]");
-  t = t.replace(/(\b(?:password|passwd|secret|token|api[_-]?key)\b\s*[:=]\s*)\S+/gi, "$1[redacted]");
+  t = t.replace(/([\w-]*(?:password|passwd|pwd|secret|token|api[_-]?key|credential)[\w-]*["']?\s*[:=]\s*)("[^"]*"|'[^']*'|\S+)/gi, "$1[redacted]");
   return t;
 }
