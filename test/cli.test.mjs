@@ -68,11 +68,11 @@ test("fit: offline verdict lists what was read and sends nothing", () => {
 
 test("targets that git would read as options are refused", () => {
   const victim = join(home, "victim.txt");
-  for (const bad of [`--output=${victim}`, "-p", "HEAD", "a..b;rm"]) {
+  for (const bad of [`--output=${victim}`, "-p", "main..--output=x", "a..b;rm"]) {
     let err = "", code = 0;
     try { sh("node", [CLI, "plan", bad, "--json"]); } catch (e) { err = e.stderr?.toString() ?? ""; code = e.status; }
     assert.notEqual(code, 0, bad);
-    assert.match(err, /target must be a PR number or a range|usage:/, bad);
+    assert.match(err, /target must be a PR number|usage:/, bad);
   }
   assert.ok(!existsSync(victim), "git --output never ran");
 });

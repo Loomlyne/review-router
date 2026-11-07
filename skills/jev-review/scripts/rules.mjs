@@ -135,13 +135,15 @@ const H = {
   secrets_infra: { path: /(\.github\/workflows|wrangler|dockerfile|deploy|\.env|vercel\.json|netlify\.toml|_headers)/i, line: /\b(secret|CORS|Content-Security-Policy|Access-Control)\b/i },
   llm: { path: /(llm|prompt|openai|anthropic|agent|ai\/)/i, line: /\b(openai|anthropic|completion|messages\.create|prompt|systemPrompt|tool_use)\b/i }
 };
-export const PROSE = /\.(md|mdx|txt|rst|adoc)$|(^|\/)(docs|\.planning)\//i;
-export const allProse = files => files.length > 0 && files.every(f => PROSE.test(f));
+// Prose = plain markup that never runs. Agent instruction files (CLAUDE.md, AGENTS.md, SKILL.md, rules) change behaviour, so they are not prose.
+export const PROSE = /\.(md|rst|adoc)$/i;
+const INSTRUCTIONS = /(^|\/)(CLAUDE(\.local)?\.md|AGENTS(\.override)?\.md|SKILL\.md|GEMINI\.md|\.cursorrules|copilot-instructions\.md)$|(^|\/)\.(claude|codex|agents|opencode|grok|cursor)\//i;
+export const allProse = files => files.length > 0 && files.every(f => PROSE.test(f) && !INSTRUCTIONS.test(f));
 
 export function heuristicSignals(keys, { files, added, markers = 0 }) {
   const out = {};
   for (const k of keys) {
-    if (k === "docs_only") { out[k] = files.length && files.every(f => PROSE.test(f)) ? 0.9 : 0.05; continue; }
+    if (k === "docs_only") { out[k] = allProse(files) ? 0.9 : 0.05; continue; }
     if (k === "copies") { out[k] = 0.1; continue; } // not judged without Jev
     if (k === "special_case") { out[k] = markers > 0 ? 0.8 : 0.1; continue; }
     const h = H[k];
@@ -180,8 +182,10 @@ const SECRETS = [
 export function redact(text) {
   let t = text;
   for (const re of SECRETS) t = t.replace(re, "[redacted-secret]");
-  t = t.replace(/(\b[a-z][\w+.-]*:\/\/)[^\s/:@]+:[^\s/@]+@/gi, "$1[redacted]@"); // credentials in URLs
+  t = t.replace(/(\b[a-z][\w+.-]*:\/\/)[^\s/]*@/gi, "$1[redacted]@"); // credentials in URLs (up to the last @ before the host)
+  t = t.replace(/\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{6,}/g, "$1 [redacted]");
+  t = t.replace(/^(\s*(?:authorization|cookie|set-cookie)\s*:\s*).+$/gim, "$1[redacted]");
   t = t.replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "[redacted-email]");
-  t = t.replace(/([\w-]*(?:password|passwd|pwd|secret|token|api[_-]?key|credential)[\w-]*["']?\s*[:=]\s*)("[^"]*"|'[^']*'|\S+)/gi, "$1[redacted]");
+  t = t.replace(/([\w-]*(?:password|passwd|passphrase|pwd|pass|secret|token|api[_-]?key|private[_-]?key|credential|auth|cookie)[\w-]*["']?\s*[:=]\s*)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)/gi, "$1[redacted]");
   return t;
 }

@@ -39,7 +39,7 @@ const findSkill = name => SKILL_ROOTS().map(r => join(r, name, "SKILL.md")).find
 // ---------------- plan ----------------
 async function plan() {
   const target = a._[1];
-  if (!target) throw usage("plan <pr-number | base..head> [--author <model>] [--host <host>]");
+  if (!target) throw usage("plan <pr-number | ref | base..head> [--author <model>] [--host <host>]");
   const cfg = L.loadConfig();
   const { host, how: hostHow } = L.detectHost(a.host);
   const hcfg = cfg.hosts[host] ?? cfg.hosts.generic;
@@ -219,8 +219,7 @@ async function readSecret() {
     const v = L.tryRun("pbpaste", [])?.trim();
     if (!v) throw new Error("clipboard is empty (or pbpaste is unavailable: macOS only)");
     if (!L.KEY_SHAPE.test(v)) throw new Error("the clipboard does not hold a TypeSafe API key; nothing stored, clipboard left as it was");
-    L.tryRun("pbcopy", [], { input: "", stdio: ["pipe", "ignore", "ignore"] });
-    return v;
+    return v; // cleared after the key is stored, so a keychain failure does not lose it
   }
   if (!process.stdin.isTTY) return readFileSync(0, "utf8").trim();
   process.stderr.write("Paste your TypeSafe API key (input hidden), then Enter: ");
@@ -241,6 +240,7 @@ async function key() {
   const cfg = L.loadConfig();
   if (sub === "store") {
     const where = L.storeKey(await readSecret(), cfg);
+    if (a["from-clipboard"]) L.tryRun("pbcopy", [], { input: "", stdio: ["pipe", "ignore", "ignore"] });
     const chk = await L.checkKey(cfg);
     return print({ stored: where, check: chk }, `Stored in ${where}. Check: ${chk.detail}.`);
   }

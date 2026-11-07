@@ -1,7 +1,7 @@
 // Shared I/O: config, TypeSafe key lookup, the Jev client, git/gh helpers, local logs.
 // The key is read from the environment or the OS keychain and is never printed, logged or written to a file.
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 
@@ -138,24 +138,28 @@ export const gh = argv => run("gh", argv).trimEnd();
 export const NOISE = /(^|\/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb?|Cargo\.lock|poetry\.lock|go\.sum)$|(^|\/)node_modules\/|\.min\.(js|css)$|\.generated\.|\.snap$/;
 
 // A target is a PR number or base..head. Anything else (above all a leading "-") is refused: git would read it as an option.
-export const RANGE = /^[\w./@^~{}-]+\.{2,3}[\w./@^~{}-]+$/;
+export const RANGE = /^[\w./@^~{}-]+(\.{2,3}[\w./@^~{}-]+)?$/;
 export function checkTarget(target) {
-  if (/^\d+$/.test(target) || (RANGE.test(target) && !target.startsWith("-"))) return target;
-  throw new Error(`target must be a PR number or a range like main..HEAD, got ${JSON.stringify(target.slice(0, 80))}`);
+  if (/^\d+$/.test(target) || (RANGE.test(target) && !/(^|\.\.)-/.test(target))) return target;
+  throw new Error(`target must be a PR number, a ref, or a range like main..HEAD, got ${JSON.stringify(target.slice(0, 80))}`);
 }
 
 // target: PR number (via gh), or a git range like main..HEAD.
 export function loadChange(target) {
   checkTarget(target);
   const isPr = /^\d+$/.test(target);
-  const diff = isPr ? gh(["pr", "diff", target]) : git(["diff", "--end-of-options", target]);
-  const files = (isPr ? gh(["pr", "diff", target, "--name-only"]) : git(["diff", "--name-only", "--end-of-options", target])).split("\n").filter(Boolean);
+  // --no-renames: a rename shows as delete + add, so code moved into docs/ still counts as code.
+  const diff = isPr ? gh(["pr", "diff", target]) : git(["diff", "--no-renames", "--end-of-options", target]);
+  const files = isPr ? prFiles(diff) : git(["diff", "--no-renames", "--name-only", "--end-of-options", target]).split("\n").filter(Boolean);
   const title = isPr ? JSON.parse(gh(["pr", "view", target, "--json", "title"])).title : target;
   const range = isPr ? null : target;
   const messages = isPr ? JSON.parse(gh(["pr", "view", target, "--json", "commits"])).commits.map(c => `${c.messageHeadline}\n${c.messageBody}`).join("\n")
     : tryRun("git", ["log", "--format=%B", "--end-of-options", target]) ?? "";
   return { isPr, diff, files, title, range, messages };
 }
+
+// Both sides of every "diff --git a/X b/Y" header, so renamed-from paths are judged too.
+export const prFiles = diff => [...new Set([...diff.matchAll(/^diff --git a\/(\S+) b\/(\S+)$/gm)].flatMap(m => [m[1], m[2]]))];
 
 export function shapeDiff(diff, { max = 80000, perFile = null } = {}) {
   const hunks = diff.split(/^(?=diff --git )/m).filter(h => !NOISE.test(h.match(/^diff --git a\/(\S+)/)?.[1] ?? ""));
@@ -191,7 +195,7 @@ export function detectHost(flag) {
 // ---------- logs (signals and verdicts only, never diffs or text) ----------
 export function log(cfg, name, entry) {
   if (!cfg.log) return;
-  try { mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 }); appendFileSync(join(STATE_DIR, `${name}.jsonl`), JSON.stringify({ time: new Date().toISOString(), ...entry }) + "\n", { mode: 0o600 }); } catch { /* logging is best effort */ }
+  try { mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 }); appendFileSync(join(STATE_DIR, `${name}.jsonl`), JSON.stringify({ time: new Date().toISOString(), ...entry }) + "\n", { mode: 0o600 }); chmodSync(join(STATE_DIR, `${name}.jsonl`), 0o600); } catch { /* logging is best effort */ }
 }
 
 export function args(argv, flags = []) {

@@ -120,7 +120,7 @@ test("fit verdict truth table", () => {
 test("heuristic: path beats keyword, docs-only needs every file to be prose", () => {
   const h = R.heuristicSignals(["money", "auth", "docs_only", "copies", "special_case"], { files: ["src/billing/charge.ts"], added: ["const token = 1"], markers: 2 });
   assert.equal(h.money, 0.8); assert.equal(h.auth, 0.5); assert.equal(h.docs_only, 0.05); assert.equal(h.copies, 0.1); assert.equal(h.special_case, 0.8);
-  assert.equal(R.heuristicSignals(["docs_only"], { files: ["README.md", "docs/a.txt"], added: [] }).docs_only, 0.9);
+  assert.equal(R.heuristicSignals(["docs_only"], { files: ["README.md", "docs/a.md"], added: [] }).docs_only, 0.9);
   // heuristic signals flow through the same truth table
   const s = R.heuristicSignals(Object.keys(review()), { files: ["src/billing/charge.ts"], added: [] });
   assert.equal(R.reviewTier(s, small).tier, "deep");
@@ -138,13 +138,18 @@ test("trailers can never exclude every reviewer; --author still can", () => {
 });
 
 test("allProse is a fact from the file list", () => {
-  assert.equal(R.allProse(["README.md", "docs/x.ts"]), true);
+  assert.equal(R.allProse(["README.md", "docs/guide.md"]), true);
+  assert.equal(R.allProse(["docs/evil.js"]), false);
+  assert.equal(R.allProse(["x.mdx"]), false);
+  assert.equal(R.allProse(["requirements.txt"]), false);
+  assert.equal(R.allProse(["CLAUDE.md"]), false);
+  assert.equal(R.allProse([".claude/commands/x.md"]), false);
   assert.equal(R.allProse(["README.md", "src/a.ts"]), false);
   assert.equal(R.allProse([]), false);
 });
 
 test("redact covers quoted keys, prefixed names, URL credentials and quoted values", () => {
-  const cases = ['{"password": "hunter2hunter2"}', "GITHUB_TOKEN=abcd1234efgh", "DATABASE_PASSWORD=zzzz", "postgres://u:pw@localhost/db", 'password: "two words"', "api_key='xyz987'"];
+  const cases = ['password: "a \\" b hunter2"', "https://u:p@ss@host/x", "Authorization: Bearer abcdef123456", "passphrase=hunter2", "private_key=hunter2", '{"password": "hunter2hunter2"}', "GITHUB_TOKEN=abcd1234efgh", "DATABASE_PASSWORD=zzzz", "postgres://u:pw@localhost/db", 'password: "two words"', "api_key='xyz987'"];
   for (const c of cases) {
     const t = R.redact(c);
     assert.ok(!/hunter2|abcd1234efgh|zzzz|:pw@|two words|xyz987/.test(t), `${c} -> ${t}`);
