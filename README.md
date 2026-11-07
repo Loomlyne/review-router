@@ -1,161 +1,82 @@
 # review-router
 
-Risk-ranked pull request review that runs on the agent subscription you already pay for.
+**Your AI agent reviews your code changes. The riskier the change, the harder the review.**
 
-A script reads the diff and asks a few small yes/no questions: does it touch money, a database, sign-in, a security control, tricky logic, or only docs? Plain code turns the answers into a plan: how deep the review goes, which of your models review it (never the model that wrote it), a second pass when the risk is high, and whether a security audit should run. Your own agent (Claude Code, Codex, OpenCode, Grok CLI or any other) then does the reviewing.
+It runs on the AI subscription you already have (Claude Code, Codex, OpenCode, Grok CLI or any other agent). No extra bill, no GitHub Actions minutes.
 
-- **No extra AI bill for reviews.** Reviewers are your host's own models and subagents. No GitHub Actions minutes.
-- **Risk decides the depth.** A typo fix gets one quick review; an auth change gets two strong models in a row.
-- **The author never grades its own work.** Authors come from `--author` and from `Co-Authored-By` trailers.
-- **Judgments, not decisions.** The truth tables in [`rules.mjs`](skills/review-router/scripts/rules.mjs) decide. The yes/no answers they read come from one of two backends. The optional one is Jev, a System One model from [TypeSafe](https://typesafe.ai) that returns a probability per question, and it needs your own TypeSafe API key. The default is a documented code-only heuristic. Every output says which one ran.
+- A typo fix gets one quick review.
+- A change to payments, sign-in or the database gets two strong models, one after the other.
+- The model that wrote the change never reviews it.
 
 ## Install
 
-Every host needs Node.js 20+ and git. `gh` is needed to review by PR number.
+You need Node.js 20+ and git. Pick your agent and run one command:
 
-| Host | One command | Checked on 2026-11-07 |
-|---|---|---|
-| Claude Code (plugin) | `claude plugin marketplace add Loomlyne/review-router && claude plugin install review-router@review-router` | manifest passes `claude plugin validate` |
-| Claude Code (skill) | `npx skills add Loomlyne/review-router --skill review-router -a claude-code -g` | installed to `.claude/skills/` |
-| Codex CLI | `npx skills add Loomlyne/review-router --skill review-router -a codex -g` | Codex lists it from `.agents/skills/` |
-| OpenCode | `npx skills add Loomlyne/review-router --skill review-router -a opencode -g` | `opencode debug skill` lists it from `~/.config/opencode/skills/` |
-| Grok CLI (xAI) | `npx skills add Loomlyne/review-router --skill review-router -a grok -g` | `grok inspect` lists it from `~/.grok/skills/`; project-scope skills show only in a trusted folder |
-| Any other agent | `git clone --depth 1 https://github.com/Loomlyne/review-router /tmp/jr && cp -R /tmp/jr/skills/review-router <your agent's skills folder>/` | then add one line to its instructions: "For PR reviews, follow `<path>/review-router/SKILL.md`." |
-
-`npx skills` is the [Vercel Labs skills CLI](https://github.com/vercel-labs/skills). Drop `-g` to install into the current project instead.
-
-## 60-second demo
-
-In any repo with a recent commit, ask your agent:
-
-> Review the last commit with review-router.
-
-Or run the scripts yourself (`CLI` = `node <skill folder>/scripts/cli.mjs`):
-
+**Claude Code**
 ```bash
-CLI doctor                          # what is set up, what is missing
-CLI plan HEAD~1..HEAD               # tier + reviewer models
-CLI audit HEAD~1..HEAD              # security-audit mode + untangle signal
+claude plugin marketplace add Loomlyne/review-router && claude plugin install review-router@review-router
 ```
 
-A real run on a 5-line change that trusted a caller's `x-admin` header (written by Sonnet, per its commit trailer):
+**Codex**
+```bash
+npx skills add Loomlyne/review-router --skill review-router -a codex -g
+```
+
+**OpenCode**
+```bash
+npx skills add Loomlyne/review-router --skill review-router -a opencode -g
+```
+
+**Grok CLI**
+```bash
+npx skills add Loomlyne/review-router --skill review-router -a grok -g
+```
+
+**Any other agent:** copy the `skills/review-router` folder into your agent's skills folder, then add this line to its instructions: "For PR reviews, follow `<path>/review-router/SKILL.md`."
+
+## Use it
+
+In any project, ask your agent:
+
+> Review my last commit with review-router.
+
+or
+
+> Review PR 42 with review-router.
+
+(Reviewing by PR number needs the [GitHub CLI](https://cli.github.com), `gh`.)
+
+That's it. The first time, the agent checks your setup and tells you if anything is missing.
+
+## What you get
 
 ```text
-plan   judge jev-1.14.0  auth 0.95  security 0.92  money 0.01  docs_only 0.01
-       tier deep (touches auth, security)  authors [sonnet]  reviewers [opus]
-       note: only one other model is configured, so the second pass is skipped
-audit  untrusted_input 0.82  access 0.95  special_case 0.95
-       security scoped  untangle watch (special cases added)
-review opus: request changes. src/api/session.js:3 lets any client send x-admin: 1 and edit any document
+plan    tier deep (touches auth, security)   reviewers [opus]
+audit   security scoped
+review  opus: request changes. src/api/session.js:3 lets any client
+        send x-admin: 1 and edit any document
 ```
 
-## First run
+## Setup (optional, 2 minutes)
 
-The agent runs `CLI doctor` itself and walks you through each `todo`:
-
-- **Reviewer models.** Claude Code ships with `opus > sonnet`. For other hosts, run `CLI config init` and list the models your subscription offers, strongest first. See [hosts.md](skills/review-router/references/hosts.md).
-- **TypeSafe key (optional).** Create one at [console.typesafe.ai/keys](https://console.typesafe.ai/keys). In **your own terminal**, not the agent chat, copy it and run `CLI key store --from-clipboard` (macOS Keychain; the clipboard is cleared afterwards), or `CLI key store` and paste at the hidden prompt (macOS Keychain or Linux Secret Service). Anywhere else, set `TYPESAFE_API_KEY` in your shell profile. `CLI key check` confirms it works. The key is never printed, logged or written to a repo file. TypeSafe bills Jev calls under its own pricing and terms: see [models](https://docs.typesafe.ai/models.md) and [legal](https://docs.typesafe.ai/legal.md).
-- **Companion skills.** The audit gate points to Cloudflare's [security-audit](https://github.com/cloudflare/security-audit-skill) and Caldo's [untangle-codebase](https://github.com/caldoai/skills). Doctor prints the install command for each one that is missing.
+1. **Tell it your models** (not needed on Claude Code). Ask your agent: "Set up review-router with my models." It lists the models your subscription offers, strongest first.
+2. **Add a TypeSafe key for sharper judgments.** Without one, it uses simple built-in rules, which play it safe and pick deeper reviews more often. To add one: create a key at [console.typesafe.ai/keys](https://console.typesafe.ai/keys), then ask your agent: "Help me add my review-router key." It gives you one command to run in your own terminal. Never paste the key into the chat.
 
 ## Is it worth it for you?
 
-`CLI fit` answers that before you commit to it. It reads, locally and read-only:
+Ask your agent: "Run the review-router fit check." It reads your project history and your agent's notes on your machine, shows you what it found, and gives a plain answer: **this will help**, **partly**, or **not worth it**, with the reasons. Nothing is sent anywhere until you say yes.
 
-- your agent notes: `~/.claude/CLAUDE.md`, the project `CLAUDE.md`, the Claude memory index, `AGENTS.md`, and the Codex, OpenCode and Grok user notes. `*.local.md` files are listed but never sent.
-- the last 90 days of git history, recent PR titles (`gh`), file paths, and the `uses:` lines of your CI workflows.
+## Privacy
 
-The first run sends nothing. It shows what it read and what it would send. `fit --send` asks Jev six small questions on redacted text (emails, credentials and key-like strings are replaced). `fit --offline` uses the heuristic and sends nothing. `--show-payload` prints the exact payload. Counts such as PRs, commits and authors are facts that code gathers. Jev only judges what needs reading: does this code handle money, sign-in or a database? Do your notes ask for reviews? Do you use more than one model? Do you work with other people? Does an AI reviewer already run? Is the repo mostly prose?
+- Your code is reviewed by your own agent, under its usual terms.
+- With a TypeSafe key, a copy of each change goes to TypeSafe to be judged. Passwords, keys and tokens are removed first. This is best effort, so keep secrets out of your commits.
+- With no key, nothing leaves your machine.
 
-```text
-Verdict: THIS WILL HELP
-  - you change this repo often (36 PRs, 409 commits in 90 days)
-  - it handles money, sign-in or a database, where a second model's review pays off
-  - your agent notes already ask for a review before merging
-  - a model other than the author is available to review (2 configured)
-Judgments (Jev jev-1.14.0 judged, code decided; 23178 chars sent):
-  risky_domain 1.000 yes   wants_review 0.820 yes   multi_model 0.980 yes
-  team 0.810 yes           has_ai_reviewer 0.050 no mostly_prose 0.190 no
-```
+## Learn more
 
-## The truth tables
-
-Noul bands: 0.7 or more is yes, 0.3 or less is no, anything between is unsettled (configurable as `bands`).
-
-**Review tier** (first row that matches wins)
-
-| Signals | Tier |
-|---|---|
-| docs only | light |
-| money, database, auth or security is yes | deep |
-| two or more risk signals unsettled | deep |
-| subtle logic, or over 400 changed lines or 10 files, or one unsettled | standard |
-| 80 changed lines or fewer | light |
-| otherwise | standard |
-
-**Reviewers:** deep takes the two strongest models that did not write the change, and models in `ask_first` (premium) may only be the second pass, after you say yes. Standard and light take one reviewer, the cheaper one first. If no other model is configured, the plan says so and a fresh-context review is the fallback.
-
-**Security gate:** `none`, `focused` (security-audit guidance on this diff), `scoped` (two or more trust-boundary signals, or one on a large diff), or `full` (routine check: no full audit in `--days`, and boundary changes found; proposed, never started on its own). **Untangle:** `watch` on duplicated logic, special cases or 3 or more sleep/retry/skip markers. `propose` only on a routine check with two of those signals.
-
-**Failure:** a failed Jev call is an error, never a "no". The plan falls back to deep with the strongest reviewers, and the audit to `focused`.
-
-## Without Jev
-
-With no key, `REVIEW_ROUTER_OFF=1`, or `"jev": false` in config, each signal comes from path and keyword rules in `heuristicSignals`. A matching file path scores 0.8. A keyword only in changed lines scores 0.5, which counts as unsettled. No match scores 0.1. Duplicated logic is not judged. These are scores, not probabilities, and every output says `judge: "heuristic"`. Expect more standard and deep reviews than Jev would choose.
-
-## Config
-
-`~/.config/review-router/config.json` (or `$REVIEW_ROUTER_CONFIG`). Every key is optional:
-
-```json
-{
-  "model": "jev-latest",
-  "bands": { "yes": 0.7, "no": 0.3 },
-  "keychain": { "service": "review-router", "account": "typesafe" },
-  "log": true,
-  "hosts": { "claude-code": { "reviewers": ["opus", "sonnet"], "ask_first": [] } }
-}
-```
-
-Logs record signals and verdicts only, never diff text, and go to `~/.local/state/review-router/*.jsonl`.
-
-## What leaves your machine
-
-Only the Jev requests to `api.typesafe.ai`, and only when you have set a key:
-
-- for `plan` and `audit`: the redacted diff, with lockfiles and generated files removed, capped at 80k characters;
-- for `fit`: the redacted payload, after you agree to send it.
-
-Before Jev or the heuristic reads a diff, `redactDiff` replaces anything that looks like a secret with a placeholder on the same line, so line counts stay true. That covers:
-
-- known key and token formats (`sk_live_`, `ghp_`, `AKIA…`, Slack, JWTs)
-- private key blocks
-- high-entropy strings
-- credentials in connection strings
-- `Authorization`, `Bearer` and `Cookie` values
-- password, token and secret assignments
-- every value in `.env` files (`.env.example` stays readable)
-
-References such as `process.env.API_KEY` stay readable. Without a key, nothing is sent. The reviews run on your host's models under that host's own terms.
-
-## Limits
-
-- Redaction is pattern-based and best effort. A secret with no recognisable shape, such as a short password in an oddly named variable, can get through. Keep secrets out of commits.
-- One forged `Co-Authored-By` trailer can remove one reviewer model. Trailers can never remove every reviewer. Pass `--author` when you know who wrote the change.
-- `.generated.`, `.min.` and `.snap` files are listed to Jev by name, but their contents are not sent.
-- Without a key, the heuristic picks standard and deep reviews more often than Jev would.
-- Only Claude Code ships with default reviewer models. Other hosts need theirs listed in the config.
-- Tested on macOS. On Linux, the Secret Service key store has not been tried. On Windows, use the `TYPESAFE_API_KEY` environment variable.
-
-## Tests
-
-```bash
-npm test     # truth tables with fixed answers, CLI in a scratch repo (offline), Jev client with a fake fetch
-```
-
-## Credits
-
-- [TypeSafe](https://typesafe.ai) makes Jev and the System One API, the optional judgment backend. This is an independent project. It is not affiliated with or endorsed by TypeSafe. Jev calls use your own key under [TypeSafe's terms](https://docs.typesafe.ai/legal.md).
-- [cloudflare/security-audit-skill](https://github.com/cloudflare/security-audit-skill) (MIT) and [caldoai/skills](https://github.com/caldoai/skills) `untangle-codebase` (MIT): referenced and installed separately, not bundled.
+- [How it works](docs/how-it-works.md): the review rules, config, the fit check, exactly what is sent, and the known limits.
+- Security checks build on Cloudflare's [security-audit](https://github.com/cloudflare/security-audit-skill) and Caldo's [untangle-codebase](https://github.com/caldoai/skills) skills, installed separately.
+- [TypeSafe](https://typesafe.ai) makes Jev, the optional judgment model. This is an independent project. It is not affiliated with or endorsed by TypeSafe. Jev calls use your own key under [TypeSafe's terms](https://docs.typesafe.ai/legal.md).
 
 ## License
 
